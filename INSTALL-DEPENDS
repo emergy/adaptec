@@ -1,0 +1,2 @@
+yum install compat-libstdc++-33.x86_64 perl-XML-Simple
+

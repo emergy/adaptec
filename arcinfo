@@ -1,0 +1,196 @@
+#!/usr/bin/perl
+
+use strict;
+#use warnings;
+use Data::Dumper;
+use XML::Simple;
+use Getopt::Long;
+use FindBin qw($RealBin);
+#use utf8;
+
+my $controller = 1;
+my $lang = "en";
+my $verbose;
+my $temp = 0;
+
+my $opts = GetOptions(
+    "lang|l=s" => \$lang,
+    "verbose|v+" => \$verbose,
+    "temperature|t+" => \$temp,
+    "help|h+" => sub {
+        print <<END;
+Usage: $0 [--lang=<ru|en>] --verbose [<device number>|<channel> <drive>]
+       $0 --temperature
+END
+        exit;
+    },
+);
+
+my ($connector, $device) = @ARGV;
+
+my $config = &get_config();
+
+if ($temp) {
+    my $t = $config->{'Controller information'}->{'Temperature'};
+    $t =~ s/(\d+).*/$1/;
+    print $t;
+    exit;
+}
+
+my $lang_file = $RealBin . "/lang/" .  $lang . ".lang";
+
+# get smart
+my $arcsmart = `$RealBin/arcconf GETSMARTSTATS $controller`;
+$arcsmart =~ s/.*?(<SmartStats.*<\/SmartStats>).*/$1/s;
+
+# xml to hash
+my $p = new XML::Simple;
+my $data = $p->XMLin($arcsmart);
+
+my $dev_hash = $data->{PhysicalDriveSmartStats};
+
+
+# loop for drives
+foreach my $drive_num (sort { $a <=> $b } keys %$dev_hash) {
+    if (($connector) and (length($device) == 0)) {
+        next if $connector ne $drive_num;
+    } elsif (($connector) and ($device)) {
+        my $location = $config->{"Physical Device information"}->{"Device #" . $drive_num}->{"Reported Location"};
+        next if ($location ne "Connector $connector, Device $device");
+    }
+        
+    &show_info($drive_num);
+
+    my $Attributes = $dev_hash->{$drive_num}->{Attribute};
+
+    # loop for attributes
+    foreach my $attr (sort { hex($a) <=> hex($b) } keys %$Attributes) {
+        my $attr_name = &get_attr_name($attr);
+        next unless $attr_name;
+        $attr_name = "" unless $attr_name;
+        my $Current = $Attributes->{$attr}->{normalizedCurrent};
+        my $Worst = $Attributes->{$attr}->{normalizedWorst};
+        my $rawValue = $Attributes->{$attr}->{rawValue};
+
+        if ($lang ne "en") {
+            print hex($attr) . " $attr_name\t$Current $Worst $rawValue\n";
+        } else {
+            print sprintf "%3s %30s\t%3d %3d %10d\n", hex($attr), $attr_name, $Current, $Worst, $rawValue;
+        }
+    }
+    print "\n\n\n";
+}
+
+sub get_attr_name {
+    my $attr = shift;
+    $attr =~ s/^0x//;
+    open LNG, "<", $lang_file or die "Can not open file " . $lang_file . ": " . $!;
+    while (chomp(my $line = <LNG>)) {
+        my ($key, $val) = split(/=/, $line);
+        if (uc($attr) eq uc($key)) {
+            return $val;
+        }
+    }
+    return 0;
+}
+
+
+sub show_info {
+    my $drive_num = shift;
+
+    my $info = $config->{"Physical Device information"}->{"Device #" . $drive_num};
+
+    if ($verbose) {
+        while (my ($key, $val) = each %$info) {
+            print sprintf("%s: %s\n", $key, $val);
+        }
+    } else {
+        print "Device #" . $drive_num . "\n";
+        print "Model: " . $info->{"Model"} . "\n";
+        print "Serial number: " . $info->{"Serial number"} . "\n";
+        print "Size: " . $info->{"Size"} . "\n";
+        print "Reported Location: " . $info->{"Reported Location"} . "\n";
+    }
+}
+
+sub get_config {
+    my $section = "";
+    my $section_skip = 0;
+    my $sub_section = "root";
+    my $sub_section_skip = 0;
+    my $dev = "";
+    my $arcconfig = {};
+    
+    # get adaptec config
+    my @arcconf = `/usr/local/bin/arcconf GETCONFIG $controller`;
+    
+    # loop of adaptec config
+    for (my $i = 1; $i < $#arcconf; $i++) {
+        next if ($arcconf[$i] =~ /^ *$/); # skip empty lines
+    
+        # skip section title lines
+        if (($section_skip == 1 ) or ($section_skip == 2 )) {
+            $section_skip++;
+            next;
+        }
+        
+        # detect section
+        if (($arcconf[$i] =~ /^-+$/) and ($arcconf[$i + 2] =~ /^-+$/)){
+            my $line = $arcconf[$i + 1];
+            $line =~ s/\s*(.*)\s*/$1/;
+            $section = $line;
+            $section_skip = 1;
+            $sub_section = "root";
+            $dev = "";
+            next;
+        }
+    
+        # skip sub_section title lines
+        if (($sub_section_skip == 1 ) or ($sub_section_skip == 2 )) {
+            $sub_section_skip++;
+            next;
+        }
+        
+        # detect sub_section
+        if (($arcconf[$i] =~ /-+$/) and ($arcconf[$i + 2] =~ /-+$/)){
+            my $line = $arcconf[$i + 1];
+            $line =~ s/\s*(.*)\s*/$1/;
+            $sub_section = $line;
+            $sub_section_skip = 1;
+            $dev = "";
+            next;
+        }
+    
+        # "Device is a" line adapting for detect dev subsection
+        my $line = $arcconf[$i];
+        $line =~ s/\s*(.*)\s*/$1/;
+        if ($line =~ /^Device is a (.*)/) {
+            $line = "Device is : " . $1;
+        }
+    
+        # detect dev subsection, save and next loop
+        unless ($line =~ /\s:\s/) {
+            $dev = $line;
+            next;
+        }
+    
+        my ($key, $val) = split(/\s+:\s/, $line);
+    
+        # add parametr to main hash
+        if ($dev) {
+            if ($sub_section eq "root") { 
+                $arcconfig->{$section}->{$dev}->{$key} = $val;
+            } else {
+                $arcconfig->{$section}->{$sub_section}->{$dev}->{$key} = $val;
+            }
+        } else {
+            if ($sub_section eq "root") {
+                $arcconfig->{$section}->{$key} = $val;
+            } else {
+                $arcconfig->{$section}->{$sub_section}->{$key} = $val;
+            }
+        }
+    }
+
+    return $arcconfig;
+}
