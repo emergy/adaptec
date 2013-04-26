@@ -5,7 +5,7 @@ use warnings;
 use FindBin qw/$RealBin/;
 
 my $config = '/etc/zabbix/zabbix_agentd.conf';
-my $line = "UserParameter=ssdlive_num_,$RealBin/ssdlive.pl _num_";
+my $line = "UserParameter=ssdlive_num_,sudo $RealBin/ssdlive.pl _num_";
 
 unless (-e $config) {
 	my $c = '/etc/zabbix_agentd.conf';
@@ -36,3 +36,9 @@ foreach (@ARGV) {
 	print CFG $l . "\n";
 }
 close CFG;
+
+open SUDO, ">> /etc/sudoers" or die "Can't open sudoers file: $!\n";
+print SUDO "\n# For zabbix SSD monitoring\n";
+print SUDO "zabbix ALL=(ALL) NOPASSWD: /usr/local/share/adaptec/ssdlive.pl\n";
+close SUDO;
+

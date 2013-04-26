@@ -6,7 +6,7 @@ use XML::Simple;
 use FindBin qw/$RealBin/;
 
 # adaptec utilite
-my $arcconf = "$RealBin/arcconf";
+my $arcconf = "sudo $RealBin/arcconf";
 
 # get device id and SMART Attribute from command attribute
 my ($id, $attribute) = @ARGV;
